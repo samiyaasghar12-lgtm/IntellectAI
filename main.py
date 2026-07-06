@@ -1,3 +1,4 @@
-import streamlit as st
+import subprocess
+import sys
 
-exec(open("agent.py").read())
+subprocess.run([sys.executable, "-m", "streamlit", "run", "agent.py"], check=True)

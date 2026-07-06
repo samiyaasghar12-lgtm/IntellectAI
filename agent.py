@@ -11,6 +11,9 @@ try:
     _HAS_REQUESTS = True
 except Exception:
     _HAS_REQUESTS = False
+import html as html_module
+import ipaddress
+from urllib.parse import urlparse
 try:
     import PyPDF2
     _HAS_PYPDF2 = True
@@ -22,6 +25,10 @@ try:
 except Exception:
     _HAS_DOCX = False
 load_dotenv()
+
+def _esc(text):
+    """Escape user-supplied text for safe insertion into HTML."""
+    return html_module.escape(str(text)) if text else ""
 st.set_page_config(
     page_title="IntellectAI",
     page_icon="🤖",
@@ -190,17 +197,44 @@ class _TextExtractor(HTMLParser):
             text = data.strip()
             if text:
                 self.parts.append(text)
+_ALLOWED_SCHEMES = {"http", "https"}
+
+def _is_safe_url(url):
+    """Block requests to private/internal networks and non-HTTP schemes."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        return False
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+            return False
+    except ValueError:
+        lower = hostname.lower()
+        if lower in ("localhost",) or lower.endswith(".local") or lower.endswith(".internal"):
+            return False
+    return True
+
 def fetch_url_text(url):
     if not _HAS_REQUESTS:
         return f"[Link saved: {url}] (install 'requests' to import page text)"
+    if not _is_safe_url(url):
+        return "[Blocked: URL targets a restricted address or uses a disallowed scheme]"
     try:
-        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=False)
+        if resp.is_redirect or resp.is_permanent_redirect:
+            return "[Blocked: URL returned a redirect]"
         parser = _TextExtractor()
         parser.feed(resp.text)
         text = " ".join(parser.parts)
         return text[:8000]
-    except Exception as e:
-        return f"[Could not load {url}: {e}]"
+    except Exception:
+        return f"[Could not load URL]"
 def extract_file_text(file_path=None, uploaded_file=None, file_name=""):
     name = file_name or (os.path.basename(file_path) if file_path else "file")
     lower = name.lower()
@@ -216,9 +250,9 @@ def extract_file_text(file_path=None, uploaded_file=None, file_name=""):
                 return f.read()[:8000]
         if uploaded_file is not None:
             return uploaded_file.read().decode("utf-8", errors="ignore")[:8000]
-    except Exception as e:
-        return f"[Could not read {name}: {e}]"
-    return f"[Saved source: {name}]"
+    except Exception:
+        return f"[Could not read {_esc(name)}]"
+    return f"[Saved source: {_esc(name)}]"
 
 def ask_gemini(user_text):
     # Ye 2 lines add karein taake function ke andar key mil jaye
@@ -252,14 +286,15 @@ def ask_gemini(user_text):
         resp = model.generate_content(history)
         return resp.text
         
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
+    except Exception:
+        return "❌ An error occurred while generating a response. Please check your API key and try again."
 
 def transcribe_audio(audio_bytes, mime_type="audio/wav"):
-    if not API_KEY or API_KEY in ("your_new_api_key_here", ""):
+    api_key = API_KEY
+    if not api_key or api_key in ("your_new_api_key_here", ""):
         return ""
     try:
-        genai.configure(api_key=API_KEY)
+        genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
         resp = model.generate_content([
             "Transcribe this audio to plain text exactly as spoken. Keep the same language the speaker used. Return only the transcription.",
@@ -595,7 +630,7 @@ def websites_dialog():
         
         pasted_link = st.query_params.get("pasted_link", "")
         if pasted_link:
-            st.success(f"Successfully Pasted: {pasted_link}")
+            st.success(f"Successfully Pasted: {_esc(pasted_link)}")
             
     default_text = st.query_params.get("pasted_link", "")
     links = st.text_area("Paste any links", value=default_text, height=180, placeholder="https://example.com\nhttps://youtube.com/watch?v=...")
@@ -674,7 +709,7 @@ def drive_dialog():
         
         pasted_drive = st.query_params.get("pasted_drive", "")
         if pasted_drive:
-            st.success(f"Drive Link Detected: {pasted_drive}")
+            st.success(f"Drive Link Detected: {_esc(pasted_drive)}")
             
     default_drive = st.query_params.get("pasted_drive", "")
     drive_url = st.text_input("Paste a Google Drive link", value=default_drive, key="drive_url_in")
@@ -692,7 +727,7 @@ with st.sidebar:
     _robot_html = f"<img src='{ROBOT_URI}' class='sb-logo'/>" if ROBOT_URI else "🤖"
     st.markdown(f"<div class='sb-brand'>{_robot_html}<div><div class='sb-title'>IntellectAI</div><div class='sb-tagline'>Education &amp; Career Advisor</div></div></div>", unsafe_allow_html=True)
     if PROFILE_PIC_URI:
-        st.markdown(f"<div class='sb-profile'><img src='{PROFILE_PIC_URI}' class='sb-avatar'/><div><div class='sb-uname'>{current_profile['name']}</div><div class='sb-ustatus'>{current_profile['status']}</div></div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='sb-profile'><img src='{PROFILE_PIC_URI}' class='sb-avatar'/><div><div class='sb-uname'>{_esc(current_profile['name'])}</div><div class='sb-ustatus'>{_esc(current_profile['status'])}</div></div></div>", unsafe_allow_html=True)
     if st.button("👤  My Profile", use_container_width=True):
         st.session_state.view_state = "profile"
         st.rerun()
@@ -884,7 +919,7 @@ else:
         st.markdown(
             f"<div class='hero-wrapper'>"
             f"<img src='{ROBOT_URI}' class='hero-robot-img'/>"
-            f"<div class='hero-title-main'>What's on your mind, {current_profile['name']}?</div>"
+            f"<div class='hero-title-main'>What's on your mind, {_esc(current_profile['name'])}?</div>"
             f"</div>",
             unsafe_allow_html=True
         )
