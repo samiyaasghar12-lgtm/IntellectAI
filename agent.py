@@ -21,6 +21,20 @@ try:
     _HAS_DOCX = True
 except Exception:
     _HAS_DOCX = False
+from utils import (
+    image_data_uri,
+    load_profile,
+    save_profile,
+    load_memory,
+    save_memory,
+    _TextExtractor,
+    fetch_url_text,
+    extract_file_text,
+    build_chat_entry,
+    update_chat_list,
+    MEMORY_FILE,
+    PROFILE_FILE,
+)
 load_dotenv()
 st.set_page_config(
     page_title="IntellectAI",
@@ -28,8 +42,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-MEMORY_FILE = "chat_memory.json"
-PROFILE_FILE = "profile.json"
 ROBOT_FILE = "robot.png"
 PROFILE_PIC_FILE = "profile_pic.png"
 ROBOT_URL = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcRBWrVbKZGdXiQ4iDQu-amwsD7Vy8e1q8ng_MuTpsneIw&s=10"
@@ -41,15 +53,7 @@ except Exception:
     _secrets_key = ""
 API_KEY = (_secrets_key or _env_key or "").strip()
 MODELS = ["gemini-1.5-pro", "gemini-pro"]
-def image_data_uri(path):
-    try:
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                encoded = base64.b64encode(f.read()).decode("utf-8")
-            return f"data:image/png;base64,{encoded}"
-    except Exception:
-        pass
-    return None
+
 ROBOT_URI = image_data_uri(ROBOT_FILE) or ROBOT_URL
 PROFILE_PIC_URI = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQrvqMr_iJ5proxfjDhFMCRPVIBwUyZXvdHN68lgwo0gA&s=10"
 SYSTEM_PROMPT = """You are "IntellectAI", a dedicated personalized Education & Career advisor.
@@ -81,55 +85,7 @@ WHAT YOU CAN DO
 - Interview preparation and test/exam preparation.
 - Generate quizzes, model answers, and study plans.
 Always be encouraging, supportive, and focused on the student's growth and future success."""
-def load_profile():
-    default_profile = {
-        "name": "Samiya Asghar",
-        "first_name": "",
-        "last_name": "",
-        "program": "BS",
-        "department": "Computer Science and Software Engineering",
-        "year": "2025-2029",
-        "status": "Undergraduate Student",
-        "university": "Jinnah University for Women",
-        "matriculation": "",
-        "intermediate": "",
-        "certifications": "",
-        "contact": "",
-        "address": "",
-        "skills": "",
-        "experience": "",
-    }
-    if os.path.exists(PROFILE_FILE):
-        try:
-            with open(PROFILE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                default_profile.update(data)
-                return default_profile
-        except Exception:
-            return default_profile
-    return default_profile
-def save_profile(profile_data):
-    try:
-        with open(PROFILE_FILE, "w", encoding="utf-8") as f:
-            json.dump(profile_data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
-def load_memory():
-    if os.path.exists(MEMORY_FILE):
-        try:
-            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
-        except Exception:
-            return []
-    return []
-def save_memory(data):
-    try:
-        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+
 if "all_chats" not in st.session_state:
     st.session_state.all_chats = load_memory()
 if "messages" not in st.session_state:
@@ -153,20 +109,12 @@ def new_chat():
 def persist_current():
     if not st.session_state.messages:
         return
-    first_user_msg = next((m["content"] for m in st.session_state.messages if m["role"] == "user"), "New Chat")
-    title = (first_user_msg[:30] + "...") if len(first_user_msg) > 30 else first_user_msg
-    entry_id = st.session_state.current_id or datetime.now().isoformat()
-    entry = {
-        "id": entry_id,
-        "title": title,
-        "messages": st.session_state.messages,
-        "ts": datetime.now().strftime("%I:%M %p"),
-    }
-    st.session_state.current_id = entry_id
-    updated_chats = [c for c in st.session_state.all_chats if c["id"] != entry_id]
-    updated_chats.insert(0, entry)
-    st.session_state.all_chats = updated_chats
-    save_memory(updated_chats)
+    entry = build_chat_entry(st.session_state.messages, st.session_state.current_id)
+    if entry is None:
+        return
+    st.session_state.current_id = entry["id"]
+    st.session_state.all_chats = update_chat_list(st.session_state.all_chats, entry)
+    save_memory(st.session_state.all_chats)
 def load_chat(cid):
     for c in st.session_state.all_chats:
         if c["id"] == cid:
@@ -174,51 +122,7 @@ def load_chat(cid):
             st.session_state.current_id = cid
             st.session_state.view_state = "chat"
             return
-class _TextExtractor(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.parts = []
-        self._skip = False
-    def handle_starttag(self, tag, attrs):
-        if tag in ("script", "style"):
-            self._skip = True
-    def handle_endtag(self, tag):
-        if tag in ("script", "style"):
-            self._skip = False
-    def handle_data(self, data):
-        if not self._skip:
-            text = data.strip()
-            if text:
-                self.parts.append(text)
-def fetch_url_text(url):
-    if not _HAS_REQUESTS:
-        return f"[Link saved: {url}] (install 'requests' to import page text)"
-    try:
-        resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        parser = _TextExtractor()
-        parser.feed(resp.text)
-        text = " ".join(parser.parts)
-        return text[:8000]
-    except Exception as e:
-        return f"[Could not load {url}: {e}]"
-def extract_file_text(file_path=None, uploaded_file=None, file_name=""):
-    name = file_name or (os.path.basename(file_path) if file_path else "file")
-    lower = name.lower()
-    try:
-        if lower.endswith(".pdf") and _HAS_PYPDF2:
-            reader = PyPDF2.PdfReader(file_path if file_path else uploaded_file)
-            return "\n".join((p.extract_text() or "") for p in reader.pages)[:8000]
-        if lower.endswith(".docx") and _HAS_DOCX:
-            d = docx.Document(file_path if file_path else uploaded_file)
-            return "\n".join(p.text for p in d.paragraphs)[:8000]
-        if file_path:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                return f.read()[:8000]
-        if uploaded_file is not None:
-            return uploaded_file.read().decode("utf-8", errors="ignore")[:8000]
-    except Exception as e:
-        return f"[Could not read {name}: {e}]"
-    return f"[Saved source: {name}]"
+
 
 def ask_gemini(user_text):
     # Ye 2 lines add karein taake function ke andar key mil jaye
