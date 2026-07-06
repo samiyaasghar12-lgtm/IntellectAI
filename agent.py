@@ -1,26 +1,34 @@
 import streamlit as st
 import os
 import json
+import logging
 from dotenv import load_dotenv
 import base64
 from datetime import datetime
 import google.generativeai as genai
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 try:
     import requests
     from html.parser import HTMLParser
     _HAS_REQUESTS = True
-except Exception:
+except ImportError:
     _HAS_REQUESTS = False
+    logger.info("'requests' package not installed; URL fetching disabled.")
 try:
     import PyPDF2
     _HAS_PYPDF2 = True
-except Exception:
+except ImportError:
     _HAS_PYPDF2 = False
+    logger.info("'PyPDF2' package not installed; PDF extraction disabled.")
 try:
     import docx
     _HAS_DOCX = True
-except Exception:
+except ImportError:
     _HAS_DOCX = False
+    logger.info("'python-docx' package not installed; DOCX extraction disabled.")
 load_dotenv()
 st.set_page_config(
     page_title="IntellectAI",
@@ -37,7 +45,10 @@ PROFILE_PIC_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBw
 _env_key = os.getenv("GEMINI_API_KEY", "")
 try:
     _secrets_key = st.secrets.get("GEMINI_API_KEY", "")
-except Exception:
+except (FileNotFoundError, KeyError):
+    _secrets_key = ""
+except Exception as e:
+    logger.warning("Unexpected error reading Streamlit secrets: %s", e)
     _secrets_key = ""
 API_KEY = (_secrets_key or _env_key or "").strip()
 MODELS = ["gemini-1.5-pro", "gemini-pro"]
@@ -47,8 +58,8 @@ def image_data_uri(path):
             with open(path, "rb") as f:
                 encoded = base64.b64encode(f.read()).decode("utf-8")
             return f"data:image/png;base64,{encoded}"
-    except Exception:
-        pass
+    except OSError as e:
+        logger.warning("Could not read image file '%s': %s", path, e)
     return None
 ROBOT_URI = image_data_uri(ROBOT_FILE) or ROBOT_URL
 PROFILE_PIC_URI = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQrvqMr_iJ5proxfjDhFMCRPVIBwUyZXvdHN68lgwo0gA&s=10"
@@ -105,15 +116,23 @@ def load_profile():
                 data = json.load(f)
                 default_profile.update(data)
                 return default_profile
-        except Exception:
-            return default_profile
+        except json.JSONDecodeError as e:
+            logger.error("Corrupted profile file '%s': %s", PROFILE_FILE, e)
+            st.warning("Profile file is corrupted. Using defaults.")
+        except OSError as e:
+            logger.error("Cannot read profile file '%s': %s", PROFILE_FILE, e)
+            st.warning("Could not read profile file. Using defaults.")
     return default_profile
 def save_profile(profile_data):
     try:
         with open(PROFILE_FILE, "w", encoding="utf-8") as f:
             json.dump(profile_data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    except OSError as e:
+        logger.error("Failed to save profile to '%s': %s", PROFILE_FILE, e)
+        st.error("Could not save profile. Please check file permissions.")
+    except (TypeError, ValueError) as e:
+        logger.error("Failed to serialize profile data: %s", e)
+        st.error("Could not save profile due to invalid data.")
 def load_memory():
     if os.path.exists(MEMORY_FILE):
         try:
@@ -121,15 +140,27 @@ def load_memory():
                 data = json.load(f)
                 if isinstance(data, list):
                     return data
-        except Exception:
-            return []
+                logger.warning(
+                    "Chat memory file has unexpected format (expected list, got %s). Starting fresh.",
+                    type(data).__name__,
+                )
+        except json.JSONDecodeError as e:
+            logger.error("Corrupted chat memory file '%s': %s", MEMORY_FILE, e)
+            st.warning("Chat history file is corrupted. Starting with empty history.")
+        except OSError as e:
+            logger.error("Cannot read chat memory file '%s': %s", MEMORY_FILE, e)
+            st.warning("Could not load chat history.")
     return []
 def save_memory(data):
     try:
         with open(MEMORY_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    except OSError as e:
+        logger.error("Failed to save chat memory to '%s': %s", MEMORY_FILE, e)
+        st.error("Could not save chat history. Please check file permissions.")
+    except (TypeError, ValueError) as e:
+        logger.error("Failed to serialize chat memory: %s", e)
+        st.error("Could not save chat history due to invalid data.")
 if "all_chats" not in st.session_state:
     st.session_state.all_chats = load_memory()
 if "messages" not in st.session_state:
@@ -195,11 +226,13 @@ def fetch_url_text(url):
         return f"[Link saved: {url}] (install 'requests' to import page text)"
     try:
         resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
         parser = _TextExtractor()
         parser.feed(resp.text)
         text = " ".join(parser.parts)
         return text[:8000]
-    except Exception as e:
+    except requests.RequestException as e:
+        logger.warning("Failed to fetch URL '%s': %s", url, e)
         return f"[Could not load {url}: {e}]"
 def extract_file_text(file_path=None, uploaded_file=None, file_name=""):
     name = file_name or (os.path.basename(file_path) if file_path else "file")
@@ -216,22 +249,25 @@ def extract_file_text(file_path=None, uploaded_file=None, file_name=""):
                 return f.read()[:8000]
         if uploaded_file is not None:
             return uploaded_file.read().decode("utf-8", errors="ignore")[:8000]
+    except (OSError, ValueError, KeyError) as e:
+        logger.error("Failed to extract text from '%s': %s", name, e)
+        return f"[Could not read {name}: {e}]"
     except Exception as e:
+        logger.error("Unexpected error extracting text from '%s': %s", name, e)
         return f"[Could not read {name}: {e}]"
     return f"[Saved source: {name}]"
 
 def ask_gemini(user_text):
-    # Ye 2 lines add karein taake function ke andar key mil jaye
-    global API_KEY 
+    global API_KEY
     api_key = API_KEY if 'API_KEY' in globals() else st.secrets.get("GEMINI_API_KEY")
 
     if not api_key:
-        return "❌ Error: API Key missing."
-    
+        logger.error("Gemini API call failed: API key is missing.")
+        return "❌ Error: API Key missing. Please configure GEMINI_API_KEY."
+
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-pro")
-        
+
         # History setup
         history = []
         for m in st.session_state.messages[:-1]:
@@ -244,19 +280,29 @@ def ask_gemini(user_text):
             active_context = "\n\n".join(s.get("content", "") for s in st.session_state.sources if s.get("content"))
             if active_context:
                 payload_text = f"[CONTEXT]\n{active_context}\n\n[USER INQUIRY]\n{user_text}"
-        
+
         history.append({"role": "user", "parts": [payload_text]})
 
-        # Direct model calling
         model = genai.GenerativeModel("gemini-2.5-flash")
         resp = model.generate_content(history)
+
+        if not resp.candidates:
+            block_reason = getattr(resp.prompt_feedback, "block_reason", "unknown")
+            logger.warning("Gemini response blocked. Reason: %s", block_reason)
+            return "❌ Response was blocked by content safety filters. Please rephrase your question."
+
         return resp.text
-        
+
+    except ValueError as e:
+        logger.error("Gemini response has no valid text (safety filter or empty): %s", e)
+        return "❌ Error: The response was blocked or empty. Try rephrasing your question."
     except Exception as e:
+        logger.error("Gemini API call failed: %s", e)
         return f"❌ Error: {str(e)}"
 
 def transcribe_audio(audio_bytes, mime_type="audio/wav"):
     if not API_KEY or API_KEY in ("your_new_api_key_here", ""):
+        logger.warning("Transcription skipped: API key not configured.")
         return ""
     try:
         genai.configure(api_key=API_KEY)
@@ -265,8 +311,12 @@ def transcribe_audio(audio_bytes, mime_type="audio/wav"):
             "Transcribe this audio to plain text exactly as spoken. Keep the same language the speaker used. Return only the transcription.",
             {"mime_type": mime_type, "data": audio_bytes}
         ])
-        return (resp.text or "").strip()
-    except Exception:
+        if not resp.text:
+            logger.warning("Transcription returned empty response (possibly blocked by safety filters).")
+            return ""
+        return resp.text.strip()
+    except Exception as e:
+        logger.error("Audio transcription failed: %s", e)
         return ""
 
 st.markdown("""
