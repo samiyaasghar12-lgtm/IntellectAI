@@ -1,10 +1,14 @@
 import streamlit as st
 import os
-import json
 from dotenv import load_dotenv
-import base64
 from datetime import datetime
-import google.generativeai as genai
+from utils import (
+    read_json_file,
+    write_json_file,
+    image_data_uri,
+    get_gemini_model,
+    clipboard_paste_button_html,
+)
 try:
     import requests
     from html.parser import HTMLParser
@@ -41,15 +45,6 @@ except Exception:
     _secrets_key = ""
 API_KEY = (_secrets_key or _env_key or "").strip()
 MODELS = ["gemini-1.5-pro", "gemini-pro"]
-def image_data_uri(path):
-    try:
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                encoded = base64.b64encode(f.read()).decode("utf-8")
-            return f"data:image/png;base64,{encoded}"
-    except Exception:
-        pass
-    return None
 ROBOT_URI = image_data_uri(ROBOT_FILE) or ROBOT_URL
 PROFILE_PIC_URI = "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQrvqMr_iJ5proxfjDhFMCRPVIBwUyZXvdHN68lgwo0gA&s=10"
 SYSTEM_PROMPT = """You are "IntellectAI", a dedicated personalized Education & Career advisor.
@@ -99,37 +94,17 @@ def load_profile():
         "skills": "",
         "experience": "",
     }
-    if os.path.exists(PROFILE_FILE):
-        try:
-            with open(PROFILE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                default_profile.update(data)
-                return default_profile
-        except Exception:
-            return default_profile
+    data = read_json_file(PROFILE_FILE, None)
+    if isinstance(data, dict):
+        default_profile.update(data)
     return default_profile
 def save_profile(profile_data):
-    try:
-        with open(PROFILE_FILE, "w", encoding="utf-8") as f:
-            json.dump(profile_data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    write_json_file(PROFILE_FILE, profile_data)
 def load_memory():
-    if os.path.exists(MEMORY_FILE):
-        try:
-            with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    return data
-        except Exception:
-            return []
-    return []
+    data = read_json_file(MEMORY_FILE, [])
+    return data if isinstance(data, list) else []
 def save_memory(data):
-    try:
-        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    write_json_file(MEMORY_FILE, data)
 if "all_chats" not in st.session_state:
     st.session_state.all_chats = load_memory()
 if "messages" not in st.session_state:
@@ -220,6 +195,9 @@ def extract_file_text(file_path=None, uploaded_file=None, file_name=""):
         return f"[Could not read {name}: {e}]"
     return f"[Saved source: {name}]"
 
+def add_source(icon, name, content):
+    st.session_state.sources.append({"type": icon, "name": name, "content": content})
+
 def ask_gemini(user_text):
     # Ye 2 lines add karein taake function ke andar key mil jaye
     global API_KEY 
@@ -229,9 +207,6 @@ def ask_gemini(user_text):
         return "❌ Error: API Key missing."
     
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-pro")
-        
         # History setup
         history = []
         for m in st.session_state.messages[:-1]:
@@ -247,8 +222,7 @@ def ask_gemini(user_text):
         
         history.append({"role": "user", "parts": [payload_text]})
 
-        # Direct model calling
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = get_gemini_model(api_key, "gemini-2.5-flash")
         resp = model.generate_content(history)
         return resp.text
         
@@ -259,8 +233,7 @@ def transcribe_audio(audio_bytes, mime_type="audio/wav"):
     if not API_KEY or API_KEY in ("your_new_api_key_here", ""):
         return ""
     try:
-        genai.configure(api_key=API_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = get_gemini_model(API_KEY, "gemini-1.5-flash")
         resp = model.generate_content([
             "Transcribe this audio to plain text exactly as spoken. Keep the same language the speaker used. Return only the transcription.",
             {"mime_type": mime_type, "data": audio_bytes}
@@ -565,33 +538,10 @@ def websites_dialog():
     
     if is_mobile:
         st.info("📱 Mobile Mode Active: Tap below to paste links instantly from your clipboard.")
-        st.components.v1.html("""
-        <button id="paste-btn" style="
-            background-color: #2b2b40;
-            color: #ffffff;
-            border: 1px solid #3e3e5c;
-            border-radius: 8px;
-            padding: 10px 16px;
-            font-size: 14px;
-            font-family: system-ui, sans-serif;
-            width: 100%;
-            cursor: pointer;
-            margin-bottom: 12px;
-            font-weight: 600;
-        ">📋 Paste Link from Clipboard</button>
-        <script>
-            document.getElementById('paste-btn').addEventListener('click', async () => {
-                try {
-                    const text = await navigator.clipboard.readText();
-                    const url = new URL(window.parent.location.href);
-                    url.searchParams.set('pasted_link', text);
-                    window.parent.location.href = url.href;
-                } catch (err) {
-                    alert('Please allow clipboard access or paste manually.');
-                }
-            });
-        </script>
-        """, height=52)
+        st.components.v1.html(
+            clipboard_paste_button_html("paste-btn", "pasted_link", "📋 Paste Link from Clipboard"),
+            height=52,
+        )
         
         pasted_link = st.query_params.get("pasted_link", "")
         if pasted_link:
@@ -604,7 +554,7 @@ def websites_dialog():
         urls = [u.strip() for u in links.replace("\n", " ").split(" ") if u.strip()]
         for u in urls:
             text = fetch_url_text(u)
-            st.session_state.sources.append({"type": "🌐", "name": u, "content": f"[WEBSITE SOURCE: {u}]\n{text}"})
+            add_source("🌐", u, f"[WEBSITE SOURCE: {u}]\n{text}")
         st.session_state.view_state = "chat"
         # Clean pasted parameter query context before reload
         if "pasted_link" in st.query_params:
@@ -621,11 +571,11 @@ def upload_dialog():
         camera_file = st.camera_input("📸 Capture note details instantly using device camera")
         if camera_file:
             img_bytes = camera_file.read()
-            st.session_state.sources.append({
-                "type": "📄", 
-                "name": f"camera_note_{datetime.now().strftime('%M%S')}.png", 
-                "content": f"[CAMERA CAPTURE NOTE: Captured dynamically on mobile]"
-            })
+            add_source(
+                "📄",
+                f"camera_note_{datetime.now().strftime('%M%S')}.png",
+                "[CAMERA CAPTURE NOTE: Captured dynamically on mobile]",
+            )
             st.success("Camera snapshot appended!")
             
     files = st.file_uploader("Upload files", type=["pdf", "docx", "txt", "md", "py", "csv", "json"], accept_multiple_files=True, key="uploader_main")
@@ -633,7 +583,7 @@ def upload_dialog():
     if st.button("Add as sources", type="primary", key="add_uploads"):
         for f in files or []:
             text = extract_file_text(uploaded_file=f, file_name=f.name)
-            st.session_state.sources.append({"type": "📄", "name": f.name, "content": f"[UPLOADED FILE: {f.name}]\n{text}"})
+            add_source("📄", f.name, f"[UPLOADED FILE: {f.name}]\n{text}")
         st.session_state.view_state = "chat"
         st.rerun()
 
@@ -644,33 +594,10 @@ def drive_dialog():
     
     if is_mobile:
         st.info("📱 Mobile Clipboard Assistant: Grab Drive link directly from clip storage.")
-        st.components.v1.html("""
-        <button id="paste-drive-btn" style="
-            background-color: #2b2b40;
-            color: #ffffff;
-            border: 1px solid #3e3e5c;
-            border-radius: 8px;
-            padding: 10px 16px;
-            font-size: 14px;
-            font-family: system-ui, sans-serif;
-            width: 100%;
-            cursor: pointer;
-            margin-bottom: 12px;
-            font-weight: 600;
-        ">📋 Paste Drive Link</button>
-        <script>
-            document.getElementById('paste-drive-btn').addEventListener('click', async () => {
-                try {
-                    const text = await navigator.clipboard.readText();
-                    const url = new URL(window.parent.location.href);
-                    url.searchParams.set('pasted_drive', text);
-                    window.parent.location.href = url.href;
-                } catch (err) {
-                    alert('Please allow clipboard access or paste manually.');
-                }
-            });
-        </script>
-        """, height=52)
+        st.components.v1.html(
+            clipboard_paste_button_html("paste-drive-btn", "pasted_drive", "📋 Paste Drive Link"),
+            height=52,
+        )
         
         pasted_drive = st.query_params.get("pasted_drive", "")
         if pasted_drive:
@@ -682,7 +609,7 @@ def drive_dialog():
     if st.button("Insert", type="primary", key="ins_drive"):
         if drive_url:
             text = fetch_url_text(drive_url)
-            st.session_state.sources.append({"type": "📁", "name": drive_url, "content": f"[DRIVE SOURCE: {drive_url}]\n{text}"})
+            add_source("📁", drive_url, f"[DRIVE SOURCE: {drive_url}]\n{text}")
             st.session_state.view_state = "chat"
             if "pasted_drive" in st.query_params:
                 del st.query_params["pasted_drive"]
