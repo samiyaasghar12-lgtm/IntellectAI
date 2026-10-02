@@ -20,6 +20,15 @@ Your personal AI-powered academic and career advisor, built to help you navigate
 
 ---
 
+<img width="959" height="422" alt="pr 1" src="https://github.com/user-attachments/assets/9cb9f0f0-3e9b-4680-bf6a-e6cb0ede6731" />
+<img width="957" height="416" alt="pr 3" src="https://github.com/user-attachments/assets/67c17ba1-7d9f-43fe-a828-9116071601c6" />
+<img width="952" height="418" alt="pr 2" src="https://github.com/user-attachments/assets/578ab9d5-62fa-4213-8a98-7b66f611c63a" />
+<img width="952" height="418" alt="pr 2" src="https://github.com/user-attachments/assets/a92dda61-cf9c-4b1f-b9c1-6ef8e1326c4c" />
+<img width="959" height="422" alt="pr 1" src="https://github.com/user-attachments/assets/3a458b64-0bf4-4d39-ad7b-8779b8e6acb0" />
+<img width="957" height="416" alt="pr 3" src="https://github.com/user-attachments/assets/febb1a60-2bf6-4a2e-a314-987096cb85e0" />
+
+
+
 ## Table of Contents
 
 - [Overview](#overview)
