@@ -1,5 +1,5 @@
 ---
-title: IntellectAI
+Title: IntellectAI
 sdk: streamlit
 app_file: agent.py
 ---
